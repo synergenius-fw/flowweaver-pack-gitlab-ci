@@ -1,6 +1,6 @@
 {
   "name": "@synergenius/flowweaver-pack-gitlab-ci",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "GitLab CI/CD export target for Flow Weaver",
   "keywords": [
     "flowweaver-marketplace-pack",
@@ -36,7 +36,8 @@
   },
   "devDependencies": {
     "typescript": "^5.0.0",
-    "@synergenius/flow-weaver": "^0.14.2"
+    "@synergenius/flow-weaver": "^0.14.2",
+    "@types/node": "^20.0.0"
   },
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
