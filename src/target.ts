@@ -130,14 +130,42 @@ export class GitLabCITarget extends BaseCICDTarget {
   private renderPipelineYAML(ast: TWorkflowAST, jobs: CICDJob[]): string {
     const doc: Record<string, unknown> = {};
 
-    // stages (derived from job dependency order)
-    const stages = this.deriveStages(jobs);
+    // include: directive (from @includes)
+    const includes = ast.options?.cicd?.includes;
+    if (includes && includes.length > 0) {
+      doc.include = includes.map(inc => {
+        switch (inc.type) {
+          case 'local': return { local: inc.file };
+          case 'template': return { template: inc.file };
+          case 'remote': return { remote: inc.file };
+          case 'project': {
+            const obj: Record<string, string> = { project: inc.project || '', file: inc.file };
+            if (inc.ref) obj.ref = inc.ref;
+            return obj;
+          }
+          default: return { local: inc.file };
+        }
+      });
+    }
+
+    // stages (from @stage annotations or derived from dependency depth)
+    const stages = this.deriveStages(jobs, ast);
     doc.stages = stages;
 
     // Default image
     const defaultImage = this.deriveDefaultImage(ast, jobs);
     if (defaultImage) {
       doc.default = { image: defaultImage };
+    }
+
+    // Workflow-level variables
+    if (ast.options?.cicd?.variables && Object.keys(ast.options.cicd.variables).length > 0) {
+      doc.variables = { ...ast.options.cicd.variables };
+    }
+
+    // Workflow-level before_script
+    if (ast.options?.cicd?.beforeScript && ast.options.cicd.beforeScript.length > 0) {
+      doc.before_script = ast.options.cicd.beforeScript;
     }
 
     // Workflow-level rules (from triggers)
@@ -159,32 +187,36 @@ export class GitLabCITarget extends BaseCICDTarget {
   }
 
   /**
-   * Derive stages from job dependency order.
-   * Jobs with no deps → stage 1, jobs depending on stage 1 → stage 2, etc.
+   * Derive stages from @stage annotations or job dependency depth.
+   *
+   * When @stage annotations exist, jobs are grouped into named stages:
+   * - Jobs with an explicit `stage` field (set by buildJobGraph from @stage/@job)
+   *   use that stage name directly.
+   * - The returned list preserves @stage declaration order.
+   *
+   * Without @stage annotations, falls back to using each job ID as its own stage
+   * (ordered by dependency).
    */
-  private deriveStages(jobs: CICDJob[]): string[] {
-    const stages: string[] = [];
-    const assigned = new Map<string, string>();
+  private deriveStages(jobs: CICDJob[], ast?: TWorkflowAST): string[] {
+    const declaredStages = ast?.options?.cicd?.stages;
 
-    // Assign stages based on dependency depth
-    function getStage(jobId: string, jobs: CICDJob[]): string {
-      if (assigned.has(jobId)) return assigned.get(jobId)!;
+    // If @stage annotations exist, use them
+    if (declaredStages && declaredStages.length > 0) {
+      const stageNames = declaredStages.map(s => s.name);
 
-      const job = jobs.find((j) => j.id === jobId);
-      if (!job || job.needs.length === 0) {
-        assigned.set(jobId, jobId);
-        return jobId;
+      // Collect any stages referenced by jobs that aren't in the declared list
+      for (const job of jobs) {
+        if (job.stage && !stageNames.includes(job.stage)) {
+          stageNames.push(job.stage);
+        }
       }
 
-      // Stage is one after the latest dependency
-      const depStages = job.needs.map((dep) => getStage(dep, jobs));
-      assigned.set(jobId, jobId);
-      return jobId;
+      return stageNames;
     }
 
-    // Simple: use job IDs as stage names, ordered by dependency
+    // Fallback: use job IDs as stage names, ordered by dependency
+    const stages: string[] = [];
     for (const job of jobs) {
-      getStage(job.id, jobs);
       if (!stages.includes(job.id)) {
         stages.push(job.id);
       }
@@ -265,13 +297,16 @@ export class GitLabCITarget extends BaseCICDTarget {
   ): Record<string, unknown> {
     const jobObj: Record<string, unknown> = {};
 
-    // stage
-    jobObj.stage = job.id;
+    // extends (from @job extends=".template-name")
+    if (job.extends) {
+      jobObj.extends = job.extends;
+    }
+
+    // stage (use explicit stage from @stage assignment, or fall back to job ID)
+    jobObj.stage = job.stage || job.id;
 
     // image (from runner or default)
     if (job.runner && job.runner !== 'ubuntu-latest') {
-      // GitLab uses Docker images, not runner labels
-      // Map common GitHub runners to Docker images
       const imageMap: Record<string, string> = {
         'ubuntu-latest': 'ubuntu:latest',
         'ubuntu-22.04': 'ubuntu:22.04',
@@ -281,9 +316,47 @@ export class GitLabCITarget extends BaseCICDTarget {
       jobObj.image = image;
     }
 
+    // tags (from @job tags or @tags)
+    if (job.tags && job.tags.length > 0) {
+      jobObj.tags = job.tags;
+    }
+
     // needs (for DAG mode instead of stage-based ordering)
     if (job.needs.length > 0) {
       jobObj.needs = job.needs;
+    }
+
+    // retry (from @job retry)
+    if (job.retry !== undefined) {
+      jobObj.retry = { max: job.retry };
+    }
+
+    // allow_failure (from @job allow_failure)
+    if (job.allowFailure) {
+      jobObj.allow_failure = true;
+    }
+
+    // timeout (from @job timeout)
+    if (job.timeout) {
+      jobObj.timeout = job.timeout;
+    }
+
+    // rules (from @job rules)
+    if (job.rules && job.rules.length > 0) {
+      jobObj.rules = job.rules.map(rule => {
+        const ruleObj: Record<string, unknown> = {};
+        if (rule.if) ruleObj.if = rule.if;
+        if (rule.when) ruleObj.when = rule.when;
+        if (rule.allowFailure) ruleObj.allow_failure = true;
+        if (rule.changes) ruleObj.changes = rule.changes;
+        if (rule.variables) ruleObj.variables = rule.variables;
+        return ruleObj;
+      });
+    }
+
+    // coverage (from @job coverage)
+    if (job.coverage) {
+      jobObj.coverage = job.coverage;
     }
 
     // environment
@@ -293,7 +366,6 @@ export class GitLabCITarget extends BaseCICDTarget {
       if (envConfig?.url) envObj.url = envConfig.url;
       if (envConfig?.reviewers) envObj.deployment_tier = 'production';
       jobObj.environment = envObj;
-      // Protected environments require manual approval in GitLab
       if (envConfig?.reviewers) {
         jobObj.when = 'manual';
       }
@@ -303,23 +375,27 @@ export class GitLabCITarget extends BaseCICDTarget {
     if (job.services && job.services.length > 0) {
       jobObj.services = job.services.map((svc) => {
         const svcObj: Record<string, unknown> = { name: svc.image };
-        if (svc.ports) {
-          // GitLab services expose the first port automatically
-          // Additional port mapping needs alias
-        }
         return svcObj;
       });
     }
 
-    // variables (from secrets)
+    // variables (merge secrets + job-level variables)
+    const variables: Record<string, string> = {};
     if (job.secrets.length > 0) {
-      // In GitLab, CI/CD variables are automatically available
-      // But we document them for clarity
-      const variables: Record<string, string> = {};
       for (const secret of job.secrets) {
         variables[secret] = `$${secret}`;
       }
+    }
+    if (job.variables) {
+      Object.assign(variables, job.variables);
+    }
+    if (Object.keys(variables).length > 0) {
       jobObj.variables = variables;
+    }
+
+    // before_script (from @job or @before_script)
+    if (job.beforeScript && job.beforeScript.length > 0) {
+      jobObj.before_script = job.beforeScript;
     }
 
     // cache
@@ -327,28 +403,33 @@ export class GitLabCITarget extends BaseCICDTarget {
       jobObj.cache = this.renderCache(job.cache);
     }
 
-    // artifacts (upload)
+    // artifacts (upload + reports)
+    const artifactsObj: Record<string, unknown> = {};
     if (job.uploadArtifacts && job.uploadArtifacts.length > 0) {
-      const paths = job.uploadArtifacts.map((a) => a.path);
+      artifactsObj.paths = job.uploadArtifacts.map((a) => a.path);
       const expiry = job.uploadArtifacts[0].retention
         ? `${job.uploadArtifacts[0].retention} days`
         : '1 week';
-      jobObj.artifacts = {
-        paths,
-        expire_in: expiry,
-      };
+      artifactsObj.expire_in = expiry;
+    }
+    if (job.reports && job.reports.length > 0) {
+      const reports: Record<string, string> = {};
+      for (const report of job.reports) {
+        reports[report.type] = report.path;
+      }
+      artifactsObj.reports = reports;
+    }
+    if (Object.keys(artifactsObj).length > 0) {
+      jobObj.artifacts = artifactsObj;
     }
 
     // script (the actual steps)
     const script: string[] = [];
 
-    // Download artifacts (GitLab handles this automatically via `needs:`)
-    // but we add a comment for clarity if explicit artifacts are expected
     if (job.downloadArtifacts && job.downloadArtifacts.length > 0) {
       script.push(`# Artifacts from: ${job.downloadArtifacts.join(', ')} (downloaded automatically via needs:)`);
     }
 
-    // Step scripts
     for (const step of job.steps) {
       const stepScript = this.renderStepScript(step);
       script.push(...stepScript);
