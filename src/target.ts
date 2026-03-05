@@ -2,7 +2,9 @@
  * GitLab CI Export Target
  *
  * Generates .gitlab-ci.yml from a Flow Weaver CI/CD workflow.
- * No FW runtime dependency — outputs native GitLab CI YAML.
+ * Each job runs the compiled workflow code via `node dist/<name>.cicd.js --job=<id>`,
+ * with native GitLab CI handling orchestration (triggers, dependencies,
+ * runners, secrets, caches, artifacts).
  *
  * Key differences from GitHub Actions:
  * - `stage:` instead of job `needs:` (generates `stages:` list)
@@ -15,21 +17,32 @@
 
 import { stringify as yamlStringify } from 'yaml';
 import type { TWorkflowAST } from '@synergenius/flow-weaver/ast';
-import { isCICDWorkflow } from '@synergenius/flow-weaver/deployment';
 import {
-  BaseCICDTarget,
+  isCICDWorkflow,
+  buildJobGraph,
+  resolveJobSecrets,
+  injectArtifactSteps,
+  generateSecretsDoc,
   type CICDJob,
-  type CICDStep,
-} from '@synergenius/flow-weaver/deployment';
+} from '@synergenius/flowweaver-pack-cicd';
 import type {
   ExportOptions,
   ExportArtifacts,
   DeployInstructions,
+  MultiWorkflowArtifacts,
+  CompiledWorkflow,
+  NodeTypeArtifacts,
+  NodeTypeInfo,
+  NodeTypeExportOptions,
+  BundleArtifacts,
+  BundleWorkflow,
+  BundleNodeType,
 } from '@synergenius/flow-weaver/deployment';
+import { BaseExportTarget } from '@synergenius/flow-weaver/deployment';
 import { parseWorkflow } from '@synergenius/flow-weaver/api';
 import * as path from 'path';
 
-export class GitLabCITarget extends BaseCICDTarget {
+export class GitLabCITarget extends BaseExportTarget {
   readonly name = 'gitlab-ci';
   readonly description = 'GitLab CI/CD pipeline (.gitlab-ci.yml)';
 
@@ -51,7 +64,6 @@ export class GitLabCITarget extends BaseCICDTarget {
     const filePath = path.resolve(options.sourceFile);
     const outputDir = path.resolve(options.outputDir);
 
-    // Parse the workflow file to get AST
     const parseResult = await parseWorkflow(filePath, { nodeTypesOnly: false });
     if (parseResult.errors.length > 0) {
       throw new Error(`Parse errors: ${parseResult.errors.join('; ')}`);
@@ -69,28 +81,19 @@ export class GitLabCITarget extends BaseCICDTarget {
     const files = [];
 
     for (const ast of targetWorkflows) {
-      // Build job graph
-      const jobs = this.buildJobGraph(ast);
+      const jobs = buildJobGraph(ast);
+      resolveJobSecrets(jobs, ast, (name) => `$${name}`);
 
-      // Resolve secrets
-      this.resolveJobSecrets(jobs, ast, (name) => `$${name}`);
-
-      // Inject artifacts
       const artifacts = ast.options?.cicd?.artifacts || [];
-      this.injectArtifactSteps(jobs, artifacts);
-
-      // Apply workflow options
+      injectArtifactSteps(jobs, artifacts);
       this.applyWorkflowOptions(jobs, ast);
 
-      // Generate YAML
       const yamlContent = this.renderPipelineYAML(ast, jobs);
-
       files.push(this.createFile(outputDir, '.gitlab-ci.yml', yamlContent, 'config'));
 
-      // Generate secrets doc if secrets exist
       const secrets = ast.options?.cicd?.secrets || [];
       if (secrets.length > 0) {
-        const secretsDoc = this.generateSecretsDoc(secrets, 'gitlab-ci');
+        const secretsDoc = generateSecretsDoc(secrets, 'gitlab-ci');
         files.push(this.createFile(outputDir, 'SECRETS_SETUP.md', secretsDoc, 'other'));
       }
     }
@@ -113,6 +116,28 @@ export class GitLabCITarget extends BaseCICDTarget {
     };
   }
 
+  async generateMultiWorkflow(
+    _workflows: CompiledWorkflow[],
+    _options: ExportOptions,
+  ): Promise<MultiWorkflowArtifacts> {
+    throw new Error('CI/CD targets use generate() with AST, not generateMultiWorkflow()');
+  }
+
+  async generateNodeTypeService(
+    _nodeTypes: NodeTypeInfo[],
+    _options: NodeTypeExportOptions,
+  ): Promise<NodeTypeArtifacts> {
+    throw new Error('CI/CD targets do not export node types as services');
+  }
+
+  async generateBundle(
+    _workflows: BundleWorkflow[],
+    _nodeTypes: BundleNodeType[],
+    _options: ExportOptions,
+  ): Promise<BundleArtifacts> {
+    throw new Error('CI/CD targets use generate() with AST, not generateBundle()');
+  }
+
   getDeployInstructions(_artifacts: ExportArtifacts): DeployInstructions {
     return {
       title: 'Deploy GitLab CI Pipeline',
@@ -123,6 +148,7 @@ export class GitLabCITarget extends BaseCICDTarget {
       ],
       steps: [
         'Copy .gitlab-ci.yml to your repository root',
+        'Build your workflow: npx flow-weaver compile --target cicd <workflow>.ts',
         'Configure required variables in GitLab (Settings > CI/CD > Variables)',
         'Push to trigger the pipeline',
       ],
@@ -167,7 +193,7 @@ export class GitLabCITarget extends BaseCICDTarget {
     doc.stages = stages;
 
     // Default image
-    const defaultImage = this.deriveDefaultImage(ast, jobs);
+    const defaultImage = this.deriveDefaultImage(ast);
     if (defaultImage) {
       doc.default = { image: defaultImage };
     }
@@ -240,20 +266,12 @@ export class GitLabCITarget extends BaseCICDTarget {
   }
 
   /**
-   * Derive default image from @runner annotation, @deploy annotations, or built-in mappings.
+   * Derive default image from @runner annotation.
    */
-  private deriveDefaultImage(ast: TWorkflowAST, jobs: CICDJob[]): string | undefined {
-    // Check @runner annotation first
+  private deriveDefaultImage(ast: TWorkflowAST): string | undefined {
     const runner = ast.options?.cicd?.runner;
     if (runner) {
       return this.mapRunnerToImage(runner);
-    }
-    // Fall back to NODE_ACTION_MAP step images
-    for (const job of jobs) {
-      for (const step of job.steps) {
-        const mapping = this.resolveActionMapping(step, 'gitlab-ci');
-        if (mapping?.gitlabImage) return mapping.gitlabImage;
-      }
     }
     return undefined;
   }
@@ -324,7 +342,7 @@ export class GitLabCITarget extends BaseCICDTarget {
   private renderJob(
     job: CICDJob,
     ast: TWorkflowAST,
-    stages: string[],
+    _stages: string[],
   ): Record<string, unknown> {
     const jobObj: Record<string, unknown> = {};
 
@@ -446,14 +464,26 @@ export class GitLabCITarget extends BaseCICDTarget {
       jobObj.cache = this.renderCache(job.cache);
     }
 
-    // artifacts (upload + reports)
+    // artifacts: cross-job data flow via .fw-outputs/ + user-defined artifacts
     const artifactsObj: Record<string, unknown> = {};
+    const artifactPaths: string[] = [];
+
+    // Add .fw-outputs/ path for cross-job data flow if downstream jobs exist
     if (job.uploadArtifacts && job.uploadArtifacts.length > 0) {
-      artifactsObj.paths = job.uploadArtifacts.map((a) => a.path);
+      artifactPaths.push('.fw-outputs/');
+    }
+
+    if (job.uploadArtifacts && job.uploadArtifacts.length > 0) {
+      for (const a of job.uploadArtifacts) {
+        artifactPaths.push(a.path);
+      }
       const expiry = job.uploadArtifacts[0].retention
         ? `${job.uploadArtifacts[0].retention} days`
         : '1 week';
       artifactsObj.expire_in = expiry;
+    }
+    if (artifactPaths.length > 0) {
+      artifactsObj.paths = artifactPaths;
     }
     if (job.reports && job.reports.length > 0) {
       const reports: Record<string, string> = {};
@@ -466,44 +496,36 @@ export class GitLabCITarget extends BaseCICDTarget {
       jobObj.artifacts = artifactsObj;
     }
 
-    // script (the actual steps)
+    // script: install deps, then run compiled workflow for this job
     const script: string[] = [];
 
     if (job.downloadArtifacts && job.downloadArtifacts.length > 0) {
       script.push(`# Artifacts from: ${job.downloadArtifacts.join(', ')} (downloaded automatically via needs:)`);
     }
 
+    // Install dependencies
+    script.push('npm ci');
+
+    // Run compiled workflow for this job
+    const workflowBasename = ast.functionName;
+    script.push(`node dist/${workflowBasename}.cicd.js --job=${job.id}`);
+
+    // Merge step-level env vars (from secret wiring) into the variables block
     for (const step of job.steps) {
-      const stepScript = this.renderStepScript(step);
-      script.push(...stepScript);
+      if (step.env) {
+        for (const [key, value] of Object.entries(step.env)) {
+          variables[key] = value;
+        }
+      }
+    }
+    // Re-set variables if step env vars were added
+    if (Object.keys(variables).length > 0) {
+      jobObj.variables = variables;
     }
 
     jobObj.script = script;
 
     return jobObj;
-  }
-
-  private renderStepScript(step: CICDStep): string[] {
-    const mapping = this.resolveActionMapping(step, 'gitlab-ci');
-    const lines: string[] = [];
-
-    // Add env vars as export statements if present
-    if (step.env) {
-      for (const [key, value] of Object.entries(step.env)) {
-        lines.push(`export ${key}="${value}"`);
-      }
-    }
-
-    if (mapping?.gitlabScript) {
-      lines.push(`# ${mapping.label || step.name}`);
-      lines.push(...mapping.gitlabScript);
-    } else {
-      // Unknown node type — generate TODO
-      lines.push(`# TODO: Implement '${step.id}' (node type: ${step.nodeType})`);
-      lines.push(`echo "Step: ${step.name}"`);
-    }
-
-    return lines;
   }
 
   private renderCache(cache: { strategy: string; key?: string; path?: string }): Record<string, unknown> {
