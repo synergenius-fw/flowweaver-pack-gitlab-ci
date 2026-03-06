@@ -208,8 +208,11 @@ export class GitLabCITarget extends BaseExportTarget {
       doc.before_script = ast.options.cicd.beforeScript;
     }
 
-    // Workflow-level rules (from triggers)
-    const rules = this.renderWorkflowRules(ast.options?.cicd?.triggers || []);
+    // Workflow-level rules (from @rule + triggers)
+    const triggerRules = this.renderWorkflowRules(ast.options?.cicd?.triggers || []);
+    const customRules = (ast.options?.cicd as Record<string, unknown>)?.workflowRules as
+      Array<{ if?: string; when?: string; changes?: string[] }> | undefined;
+    const rules = this.mergeWorkflowRules(customRules || [], triggerRules);
     if (rules.length > 0) {
       doc.workflow = { rules };
     }
@@ -339,6 +342,36 @@ export class GitLabCITarget extends BaseExportTarget {
     return rules;
   }
 
+  /**
+   * Merge @rule entries with trigger-derived rules.
+   * `when=never` rules go first (blockers), trigger rules in the middle,
+   * then `when=always` rules last (first-match-wins semantics).
+   */
+  private mergeWorkflowRules(
+    customRules: Array<{ if?: string; when?: string; changes?: string[] }>,
+    triggerRules: Array<Record<string, unknown>>,
+  ): Array<Record<string, unknown>> {
+    if (customRules.length === 0) return triggerRules;
+
+    const beforeRules: Array<Record<string, unknown>> = [];
+    const afterRules: Array<Record<string, unknown>> = [];
+
+    for (const rule of customRules) {
+      const ruleObj: Record<string, unknown> = {};
+      if (rule.if) ruleObj.if = rule.if;
+      if (rule.when) ruleObj.when = rule.when;
+      if (rule.changes) ruleObj.changes = rule.changes;
+
+      if (rule.when === 'never') {
+        beforeRules.push(ruleObj);
+      } else {
+        afterRules.push(ruleObj);
+      }
+    }
+
+    return [...beforeRules, ...triggerRules, ...afterRules];
+  }
+
   private renderJob(
     job: CICDJob,
     ast: TWorkflowAST,
@@ -387,9 +420,13 @@ export class GitLabCITarget extends BaseExportTarget {
       jobObj.needs = job.needs;
     }
 
-    // retry (from @job retry)
+    // retry (from @job retry + retry_when)
     if (job.retry !== undefined) {
-      jobObj.retry = { max: job.retry };
+      const retryObj: Record<string, unknown> = { max: job.retry };
+      if (job.retryWhen && job.retryWhen.length > 0) {
+        retryObj.when = job.retryWhen;
+      }
+      jobObj.retry = retryObj;
     }
 
     // allow_failure (from @job allow_failure)
