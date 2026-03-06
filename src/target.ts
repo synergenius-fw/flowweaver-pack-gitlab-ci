@@ -362,7 +362,7 @@ export class GitLabCITarget extends BaseExportTarget {
       if (rule.when) ruleObj.when = rule.when;
       if (rule.changes) ruleObj.changes = rule.changes;
 
-      if (rule.when === 'never') {
+      if (rule.when === 'never' && rule.if) {
         beforeRules.push(ruleObj);
       } else {
         afterRules.push(ruleObj);
@@ -648,13 +648,19 @@ export class GitLabCITarget extends BaseExportTarget {
 
     switch (cache.strategy) {
       case 'npm':
-        cacheObj.paths = [cache.path || 'node_modules/'];
+        cacheObj.paths = cache.path
+          ? cache.path.split(',').map(p => p.trim())
+          : ['node_modules/'];
         break;
       case 'pip':
-        cacheObj.paths = [cache.path || '.pip-cache/'];
+        cacheObj.paths = cache.path
+          ? cache.path.split(',').map(p => p.trim())
+          : ['.pip-cache/'];
         break;
       default:
-        cacheObj.paths = [cache.path || '.cache/'];
+        cacheObj.paths = cache.path
+          ? cache.path.split(',').map(p => p.trim())
+          : ['.cache/'];
     }
 
     if (cache.policy) {
