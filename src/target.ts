@@ -417,7 +417,29 @@ export class GitLabCITarget extends BaseExportTarget {
 
     // needs (for DAG mode instead of stage-based ordering)
     if (job.needs.length > 0) {
-      jobObj.needs = job.needs;
+      const hasArtifactControl = job.needsArtifactControl && Object.keys(job.needsArtifactControl).length > 0;
+      const hasOptionalNeeds = job.optionalNeeds && job.optionalNeeds.length > 0;
+
+      if (hasArtifactControl || hasOptionalNeeds) {
+        // Render needs as objects when artifact control or optional needs exist
+        jobObj.needs = job.needs.map(n => {
+          const needObj: Record<string, unknown> = { job: n };
+          if (job.needsArtifactControl?.[n] !== undefined) {
+            needObj.artifacts = job.needsArtifactControl[n];
+          }
+          if (job.optionalNeeds?.includes(n)) {
+            needObj.optional = true;
+          }
+          return needObj;
+        });
+      } else {
+        jobObj.needs = job.needs;
+      }
+    }
+
+    // parallel: N (simple parallelism)
+    if (job.parallel && !job.matrix) {
+      jobObj.parallel = job.parallel;
     }
 
     // retry (from @job retry + retry_when)
@@ -491,14 +513,21 @@ export class GitLabCITarget extends BaseExportTarget {
       jobObj.variables = variables;
     }
 
-    // before_script (from @job or @before_script)
-    if (job.beforeScript && job.beforeScript.length > 0) {
+    // before_script (from @job or @before_script, null = explicit empty override)
+    if (job.beforeScript === null) {
+      jobObj.before_script = [];
+    } else if (job.beforeScript && job.beforeScript.length > 0) {
       jobObj.before_script = job.beforeScript;
     }
 
     // cache
     if (job.cache) {
       jobObj.cache = this.renderCache(job.cache);
+    }
+
+    // dependencies: [] (skip artifact download)
+    if (job.skipDependencies) {
+      jobObj.dependencies = [];
     }
 
     // artifacts: cross-job data flow via .fw-outputs/ + user-defined artifacts
@@ -528,6 +557,35 @@ export class GitLabCITarget extends BaseExportTarget {
         reports[report.type] = report.path;
       }
       artifactsObj.reports = reports;
+    }
+    // Dotenv artifacts
+    if (job.dotenvArtifacts && job.dotenvArtifacts.length > 0) {
+      const reports = (artifactsObj.reports as Record<string, string>) || {};
+      for (const dotenv of job.dotenvArtifacts) {
+        // For producer jobs, render as artifacts.reports.dotenv
+        // The upload path is the dotenv file path
+      }
+      // Check if this job produces dotenv artifacts (via uploadArtifacts)
+      if (job.uploadArtifacts) {
+        for (const a of job.uploadArtifacts) {
+          if (a.name.endsWith('-dotenv')) {
+            reports.dotenv = a.path;
+          }
+        }
+      }
+      if (Object.keys(reports).length > 0) {
+        artifactsObj.reports = reports;
+      }
+    }
+    // Also check producer dotenv uploads even without consumer dotenvArtifacts
+    if (!job.dotenvArtifacts && job.uploadArtifacts) {
+      for (const a of job.uploadArtifacts) {
+        if (a.name.endsWith('-dotenv')) {
+          const reports = (artifactsObj.reports as Record<string, string>) || {};
+          reports.dotenv = a.path;
+          artifactsObj.reports = reports;
+        }
+      }
     }
     if (Object.keys(artifactsObj).length > 0) {
       jobObj.artifacts = artifactsObj;
@@ -565,25 +623,42 @@ export class GitLabCITarget extends BaseExportTarget {
     return jobObj;
   }
 
-  private renderCache(cache: { strategy: string; key?: string; path?: string }): Record<string, unknown> {
+  private renderCache(cache: { strategy: string; key?: string; path?: string; policy?: string; files?: string[] }): Record<string, unknown> {
     const cacheObj: Record<string, unknown> = {};
+
+    // Use explicit files array if provided
+    if (cache.files && cache.files.length > 0) {
+      cacheObj.key = { files: cache.files };
+    } else {
+      switch (cache.strategy) {
+        case 'npm':
+          cacheObj.key = {
+            files: [cache.key || 'package-lock.json'],
+          };
+          break;
+        case 'pip':
+          cacheObj.key = {
+            files: [cache.key || 'requirements.txt'],
+          };
+          break;
+        default:
+          cacheObj.key = cache.key || '$CI_COMMIT_REF_SLUG';
+      }
+    }
 
     switch (cache.strategy) {
       case 'npm':
-        cacheObj.key = {
-          files: [cache.key || 'package-lock.json'],
-        };
         cacheObj.paths = [cache.path || 'node_modules/'];
         break;
       case 'pip':
-        cacheObj.key = {
-          files: [cache.key || 'requirements.txt'],
-        };
         cacheObj.paths = [cache.path || '.pip-cache/'];
         break;
       default:
-        cacheObj.key = cache.key || '$CI_COMMIT_REF_SLUG';
         cacheObj.paths = [cache.path || '.cache/'];
+    }
+
+    if (cache.policy) {
+      cacheObj.policy = cache.policy;
     }
 
     return cacheObj;
@@ -605,11 +680,14 @@ export class GitLabCITarget extends BaseExportTarget {
       }
     }
 
-    // Apply services to all jobs
+    // Apply services to jobs (respecting per-job assignment)
     if (cicd.services && cicd.services.length > 0) {
-      for (const job of jobs) {
-        if (!job.services) {
-          job.services = cicd.services;
+      const globalServices = cicd.services.filter(s => !(s as typeof s & { job?: string }).job);
+      if (globalServices.length > 0) {
+        for (const job of jobs) {
+          if (!job.services) {
+            job.services = globalServices;
+          }
         }
       }
     }
