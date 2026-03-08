@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { GitLabCITarget } from './target.js';
-import { buildJobGraph } from '@synergenius/flowweaver-pack-cicd';
+import { buildJobGraph } from '@synergenius/flow-weaver-pack-cicd';
 import type { TWorkflowAST, TNodeTypeAST } from '@synergenius/flow-weaver/ast';
 
 // ---------------------------------------------------------------------------

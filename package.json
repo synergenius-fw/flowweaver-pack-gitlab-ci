@@ -1,5 +1,5 @@
 {
-  "name": "@synergenius/flowweaver-pack-gitlab-ci",
+  "name": "@synergenius/flow-weaver-pack-gitlab-ci",
   "version": "0.2.8",
   "description": "GitLab CI/CD export target for Flow Weaver",
   "keywords": [
@@ -18,7 +18,7 @@
   },
   "peerDependencies": {
     "@synergenius/flow-weaver": ">=0.17.0",
-    "@synergenius/flowweaver-pack-cicd": ">=0.2.0"
+    "@synergenius/flow-weaver-pack-cicd": ">=0.2.0"
   },
   "dependencies": {
     "yaml": "^2.8.0"
@@ -39,7 +39,7 @@
   },
   "devDependencies": {
     "@synergenius/flow-weaver": "^0.17.0",
-    "@synergenius/flowweaver-pack-cicd": "file:../flowweaver-pack-cicd",
+    "@synergenius/flow-weaver-pack-cicd": "file:../flow-weaver-pack-cicd",
     "@types/node": "^20.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.0.0",
@@ -48,6 +48,6 @@
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
-    "url": "https://github.com/synergenius-fw/flowweaver-pack-gitlab-ci.git"
+    "url": "https://github.com/synergenius-fw/flow-weaver-pack-gitlab-ci.git"
   }
 }

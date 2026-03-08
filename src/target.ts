@@ -25,7 +25,7 @@ import {
   generateSecretsDoc,
   generateCICDRuntime,
   type CICDJob,
-} from '@synergenius/flowweaver-pack-cicd';
+} from '@synergenius/flow-weaver-pack-cicd';
 import type {
   ExportOptions,
   ExportArtifacts,

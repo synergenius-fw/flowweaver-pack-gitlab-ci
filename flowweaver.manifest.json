@@ -1,6 +1,6 @@
 {
   "manifestVersion": 2,
-  "name": "@synergenius/flowweaver-pack-gitlab-ci",
+  "name": "@synergenius/flow-weaver-pack-gitlab-ci",
   "version": "0.2.8",
   "nodeTypes": [],
   "workflows": [],

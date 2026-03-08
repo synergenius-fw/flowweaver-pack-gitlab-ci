@@ -1,4 +1,4 @@
-# @synergenius/flowweaver-pack-gitlab-ci
+# @synergenius/flow-weaver-pack-gitlab-ci
 
 GitLab CI/CD export target for [Flow Weaver](https://github.com/synergenius-fw/flow-weaver).
 
@@ -7,7 +7,7 @@ Generates native `.gitlab-ci.yml` files from Flow Weaver CI/CD workflows. No run
 ## Installation
 
 ```bash
-npm install @synergenius/flowweaver-pack-gitlab-ci
+npm install @synergenius/flow-weaver-pack-gitlab-ci
 ```
 
 This package is a **marketplace pack** — once installed, Flow Weaver automatically discovers it via `createTargetRegistry()`.
