@@ -3,7 +3,7 @@
   "version": "0.2.8",
   "description": "GitLab CI/CD export target for Flow Weaver",
   "keywords": [
-    "flowweaver-marketplace-pack",
+    "flow-weaver-marketplace-pack",
     "flow-weaver",
     "gitlab-ci",
     "cicd"
