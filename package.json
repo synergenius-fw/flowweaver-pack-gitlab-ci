@@ -4,6 +4,7 @@
   "description": "GitLab CI/CD export target for Flow Weaver",
   "keywords": [
     "flow-weaver-marketplace-pack",
+    "flowweaver-marketplace-pack",
     "flow-weaver",
     "gitlab-ci",
     "cicd"
