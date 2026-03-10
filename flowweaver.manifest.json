@@ -1,7 +1,7 @@
 {
   "manifestVersion": 2,
   "name": "@synergenius/flow-weaver-pack-gitlab-ci",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "nodeTypes": [],
   "workflows": [],
   "patterns": [],
